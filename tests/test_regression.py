@@ -7,7 +7,7 @@ from lib.ArmRobot import UniversalRobot
 @pytest.fixture(scope="module")
 def sim():
     """Connect to CoppeliaSim and wait until ready"""
-    client = RemoteAPIClient(host='localhost', port=23000)
+    client = RemoteAPIClient(host='127.0.0.1', port=23000)
     sim_obj = None
 
     max_wait = 60  # increase timeout to 60 seconds
