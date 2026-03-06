@@ -14,7 +14,6 @@ echo "=== Starting CoppeliaSim (headless mode) ==="
 # Start CoppeliaSim in headless mode under Xvfb
 xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' \
   /opt/coppelia/coppeliaSim \
-    -h \
     -s \
     -GzmqRemoteApi.rpcPort=23000 \
     -GzmqRemoteApi.bindingAddress=0.0.0.0 \
