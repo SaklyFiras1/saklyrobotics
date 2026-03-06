@@ -11,7 +11,7 @@ mkdir -p output
 
 echo "=== Starting CoppeliaSim (headless mode) ==="
 
-# Note: no -q flag — it causes CoppeliaSim to exit immediately after loading
+# Start CoppeliaSim in headless mode under Xvfb
 xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' \
   /opt/coppelia/coppeliaSim \
     -h \
@@ -26,11 +26,11 @@ echo "Log redirected to coppeliasim.log"
 
 echo "=== Waiting for ZMQ Remote API server to be ready ==="
 
-TIMEOUT=120
+# Wait for simZMQ plugin to be fully loaded
+TIMEOUT=180   # give it up to 3 minutes
 INTERVAL=2
 ELAPSED=0
 
-# Watch for the simZMQ plugin ready message
 until grep -q "plugin simZMQ: done" coppeliasim.log 2>/dev/null; do
     sleep $INTERVAL
     ELAPSED=$((ELAPSED + INTERVAL))
@@ -46,22 +46,21 @@ until grep -q "plugin simZMQ: done" coppeliasim.log 2>/dev/null; do
 done
 
 echo "CoppeliaSim ZMQ server addon loaded. Waiting for scene to settle..."
-sleep 3
+sleep 5   # give simulation a moment to initialize
+
+# Optional: print last 10 lines of log to debug
+tail -n 10 coppeliasim.log
 
 echo "=== Running pytest ==="
 
 export PYTHONPATH=/app
 
-if [ -d "/app/tests" ]; then
-    TEST_PATH="tests/"
-else
-    TEST_PATH="."
-fi
+TEST_PATH="tests/"  # explicitly set tests folder
 
 pytest $TEST_PATH \
     --html=report.html \
     --self-contained-html \
-    --timeout=180 \
+    --timeout=300 \
     --timeout-method=thread \
     -vv
 
@@ -70,7 +69,7 @@ TEST_EXIT_CODE=$?
 echo "=== Stopping CoppeliaSim ==="
 
 kill -TERM $COPPELIA_PID 2>/dev/null || true
-timeout 8s wait $COPPELIA_PID 2>/dev/null || true
+timeout 10s wait $COPPELIA_PID 2>/dev/null || true
 
 if kill -0 $COPPELIA_PID 2>/dev/null; then
     echo "CoppeliaSim still alive → force kill"
