@@ -8,3 +8,4 @@ pytest-xdist
 coppeliasim-zmqremoteapi-client
 msgpack
 matplotlib
+coppeliasim-zmqremoteapi-client==0.0.4
