@@ -1,206 +1,72 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
 echo "======================================="
 echo " CoppeliaSim CI Runtime"
 echo "======================================="
 
-########################################
-# Environment setup
-########################################
-
-echo "[INIT] Initializing runtime environment"
-
-export XDG_RUNTIME_DIR=/tmp/runtime-root
-mkdir -p "$XDG_RUNTIME_DIR"
-chmod 0700 "$XDG_RUNTIME_DIR"
-
+mkdir -p output
 LOG_FILE=coppeliasim.log
 PORT=23000
 
-########################################
-# Function to check port
-########################################
+echo "[INIT] Initializing runtime environment"
+export XDG_RUNTIME_DIR=/tmp/runtime-root
+mkdir -p $XDG_RUNTIME_DIR
+chmod 0700 $XDG_RUNTIME_DIR
 
-check_port() {
-
-    if command -v ss >/dev/null 2>&1; then
-        ss -tuln | grep -q ":$PORT"
-
-    elif command -v netstat >/dev/null 2>&1; then
-        netstat -tuln | grep -q ":$PORT"
-
-    elif command -v lsof >/dev/null 2>&1; then
-        lsof -i :"$PORT" >/dev/null 2>&1
-
-    else
-        echo "[WARN] No port checking tool available"
-        return 1
-    fi
-}
-
-########################################
-# Start CoppeliaSim
-########################################
-
-echo "[START] Launching CoppeliaSim"
-
-xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' \
+echo "[START] Launching CoppeliaSim (headless)"
+xvfb-run --auto-servernum \
 /opt/coppelia/coppeliaSim \
--H \
--s600000 \
+-H \                     # true headless
+-s \                     # start simulation continuously
 -G ZmqRemoteApi.rpcPort=23000 \
 -G ZmqRemoteApi.cntPort=23001 \
-/app/pick_and_place.ttt > "$LOG_FILE" 2>&1 &
+-a /app/start_zmq.lua \   # your Lua add-on to start ZMQ
+-f /app/pick_and_place.ttt > $LOG_FILE 2>&1 &
 
-COPPELIA_PID=$!
-
-echo "[INFO] PID: $COPPELIA_PID"
+COPSIM_PID=$!
+echo "[INFO] PID: $COPSIM_PID"
 echo "[INFO] Log file: $LOG_FILE"
 
-sleep 5
-
-########################################
-# Detect early crash
-########################################
-
-if ! kill -0 $COPPELIA_PID 2>/dev/null; then
-    echo "ERROR: CoppeliaSim crashed immediately"
-    cat "$LOG_FILE"
-    exit 1
-fi
-
-########################################
-# Wait for ZMQ plugin
-########################################
-
-echo "[WAIT] Waiting for ZMQ Remote API"
-
-TIMEOUT=180
+# Wait until ZMQ server is ready
+TIMEOUT=60
 ELAPSED=0
-
-while true; do
-
-    if grep -iq "zmq" "$LOG_FILE"; then
-        echo "[OK] ZMQ plugin detected"
-        break
-    fi
-
-    if ! kill -0 $COPPELIA_PID 2>/dev/null; then
-        echo "ERROR: CoppeliaSim crashed during startup"
-        tail -n 80 "$LOG_FILE"
-        exit 1
-    fi
-
+echo "[WAIT] Waiting for ZMQ RemoteAPI server..."
+while ! grep -q "ZeroMQ remote API server add-on initialisé" $LOG_FILE; do
+    sleep 2
+    ELAPSED=$((ELAPSED+2))
+    echo "  waiting... ${ELAPSED}s"
+    tail -n 6 $LOG_FILE
     if [ $ELAPSED -ge $TIMEOUT ]; then
-        echo "ERROR: ZMQ plugin not detected after $TIMEOUT seconds"
-        tail -n 80 "$LOG_FILE"
-        kill -TERM $COPPELIA_PID || true
+        echo "[ERROR] ZMQ RemoteAPI server did not start in time"
+        tail -n 60 $LOG_FILE
+        kill -TERM $COPSIM_PID || true
         exit 1
     fi
-
-    sleep 3
-    ELAPSED=$((ELAPSED+3))
-
-    echo "[WAIT] ${ELAPSED}s / ${TIMEOUT}s"
-    tail -n 4 "$LOG_FILE"
-
 done
+echo "[OK] ZMQ RemoteAPI server is ready!"
 
-########################################
-# Wait for port
-########################################
-
-echo "[WAIT] Waiting for port $PORT"
-
-PORT_TIMEOUT=120
-PORT_ELAPSED=0
-
-while true; do
-
-    if check_port; then
-        echo "[OK] Port $PORT is open"
-        break
-    fi
-
-    if ! kill -0 $COPPELIA_PID 2>/dev/null; then
-        echo "ERROR: CoppeliaSim crashed before opening port"
-        tail -n 80 "$LOG_FILE"
-        exit 1
-    fi
-
-    if [ $PORT_ELAPSED -ge $PORT_TIMEOUT ]; then
-        echo "ERROR: Port $PORT not opened after $PORT_TIMEOUT seconds"
-        tail -n 100 "$LOG_FILE"
-        kill -TERM $COPPELIA_PID || true
-        exit 1
-    fi
-
-    sleep 3
-    PORT_ELAPSED=$((PORT_ELAPSED+3))
-
-    echo "[WAIT] ${PORT_ELAPSED}s / ${PORT_TIMEOUT}s"
-    tail -n 6 "$LOG_FILE"
-
-done
-
-########################################
-# Debug tests
-########################################
-
-echo "[DEBUG] Checking test folder"
-
-if [ -d /app/tests ]; then
-    ls -la /app/tests
-else
-    echo "[WARN] /app/tests directory not found"
-fi
-
-echo "[DEBUG] Python files in project"
-
-find /app -name "*.py" || true
-
-########################################
-# Run tests
-########################################
-
+# Run pytest
 echo "[TEST] Running pytest"
-
 export PYTHONPATH=/app
-
 pytest tests/ \
---html=report.html \
---self-contained-html \
---timeout=300 \
---timeout-method=thread \
--vv
+    --html=output/report.html \
+    --self-contained-html \
+    --timeout=300 \
+    --timeout-method=thread \
+    -vv
 
 TEST_EXIT_CODE=$?
 
-########################################
 # Stop CoppeliaSim
-########################################
-
 echo "[STOP] Stopping CoppeliaSim"
-
-kill -TERM $COPPELIA_PID 2>/dev/null || true
-timeout 10s wait $COPPELIA_PID 2>/dev/null || true
-
-if kill -0 $COPPELIA_PID 2>/dev/null; then
-    echo "[WARN] Force killing process"
-    kill -KILL $COPPELIA_PID 2>/dev/null || true
+kill -TERM $COPSIM_PID || true
+timeout 12s wait $COPSIM_PID || true
+if kill -0 $COPSIM_PID 2>/dev/null; then
+    echo "CoppeliaSim still running → force kill"
+    kill -KILL $COPSIM_PID || true
 fi
 
-########################################
-# Final logs
-########################################
-
-echo "======================================="
-echo " Tests finished with code $TEST_EXIT_CODE"
-echo "======================================="
-
-echo "[LOG] Last lines of CoppeliaSim log"
-
-tail -n 60 "$LOG_FILE"
-
+echo "[DONE] Test finished with exit code $TEST_EXIT_CODE"
+tail -n 50 $LOG_FILE
 exit $TEST_EXIT_CODE
