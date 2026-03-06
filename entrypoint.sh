@@ -1,5 +1,4 @@
 #!/bin/bash
-
 set -euo pipefail
 
 echo "======================================="
@@ -7,37 +6,44 @@ echo " CoppeliaSim CI Runtime"
 echo "======================================="
 
 ########################################
-# Environment setup
+# Environment
 ########################################
 
-echo "[INIT] Initializing runtime environment"
+echo "[INIT] Initializing runtime"
 
 export XDG_RUNTIME_DIR=/tmp/runtime-root
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 0700 "$XDG_RUNTIME_DIR"
 
-LOG_FILE="coppeliasim.log"
+LOG_FILE=coppeliasim.log
 PORT=23000
 
 ########################################
-# Check required binaries
+# Function to check port
 ########################################
 
-echo "[CHECK] Checking dependencies"
+check_port() {
 
-command -v xvfb-run >/dev/null || { echo "ERROR: xvfb-run not installed"; exit 1; }
-command -v ss >/dev/null || { echo "ERROR: ss command not installed"; exit 1; }
+    if command -v ss >/dev/null 2>&1; then
+        ss -tuln | grep -q ":$PORT"
 
-if [ ! -f /opt/coppelia/coppeliaSim ]; then
-    echo "ERROR: CoppeliaSim binary not found at /opt/coppelia/coppeliaSim"
-    exit 1
-fi
+    elif command -v netstat >/dev/null 2>&1; then
+        netstat -tuln | grep -q ":$PORT"
+
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -i :"$PORT" >/dev/null 2>&1
+
+    else
+        echo "WARNING: no port check tool available"
+        return 1
+    fi
+}
 
 ########################################
 # Start CoppeliaSim
 ########################################
 
-echo "[START] Launching CoppeliaSim headless"
+echo "[START] Launching CoppeliaSim"
 
 xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' \
 /opt/coppelia/coppeliaSim \
@@ -49,55 +55,52 @@ xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' \
 
 COPPELIA_PID=$!
 
-echo "[INFO] CoppeliaSim PID: $COPPELIA_PID"
+echo "[INFO] PID: $COPPELIA_PID"
 echo "[INFO] Log file: $LOG_FILE"
 
 sleep 5
 
 ########################################
-# Check if process died early
+# Check if process crashed
 ########################################
 
 if ! kill -0 $COPPELIA_PID 2>/dev/null; then
-    echo "ERROR: CoppeliaSim exited immediately"
-    echo "------ LOG OUTPUT ------"
+    echo "ERROR: CoppeliaSim crashed immediately"
     cat "$LOG_FILE"
     exit 1
 fi
 
 ########################################
-# Wait for ZMQ server initialization
+# Wait for ZMQ plugin
 ########################################
 
-echo "[WAIT] Waiting for ZMQ server initialization"
+echo "[WAIT] Waiting for ZMQ initialization"
 
 TIMEOUT=180
-INTERVAL=3
 ELAPSED=0
 
 while true; do
 
     if grep -iq "zmq" "$LOG_FILE"; then
-        echo "[OK] ZMQ addon detected"
+        echo "[OK] ZMQ plugin detected"
         break
     fi
 
     if ! kill -0 $COPPELIA_PID 2>/dev/null; then
         echo "ERROR: CoppeliaSim crashed during startup"
-        echo "------ LOG OUTPUT ------"
-        cat "$LOG_FILE"
+        tail -n 80 "$LOG_FILE"
         exit 1
     fi
 
     if [ $ELAPSED -ge $TIMEOUT ]; then
-        echo "ERROR: ZMQ server did not start after $TIMEOUT seconds"
+        echo "ERROR: ZMQ not detected after $TIMEOUT seconds"
         tail -n 80 "$LOG_FILE"
         kill -TERM $COPPELIA_PID || true
         exit 1
     fi
 
-    sleep $INTERVAL
-    ELAPSED=$((ELAPSED + INTERVAL))
+    sleep 3
+    ELAPSED=$((ELAPSED+3))
 
     echo "[WAIT] ${ELAPSED}s / ${TIMEOUT}s"
     tail -n 4 "$LOG_FILE"
@@ -105,61 +108,60 @@ while true; do
 done
 
 ########################################
-# Wait for port binding
+# Wait for port
 ########################################
 
-echo "[WAIT] Waiting for port $PORT to open"
+echo "[WAIT] Waiting for port $PORT"
 
 PORT_TIMEOUT=120
 PORT_ELAPSED=0
 
 while true; do
 
-    if ss -tuln | grep -q ":$PORT"; then
-        echo "[OK] Port $PORT is listening"
+    if check_port; then
+        echo "[OK] Port $PORT is open"
         break
     fi
 
     if ! kill -0 $COPPELIA_PID 2>/dev/null; then
         echo "ERROR: CoppeliaSim crashed before port opened"
-        tail -n 100 "$LOG_FILE"
+        tail -n 80 "$LOG_FILE"
         exit 1
     fi
 
     if [ $PORT_ELAPSED -ge $PORT_TIMEOUT ]; then
         echo "ERROR: Port $PORT not opened after $PORT_TIMEOUT seconds"
-        echo "------ LOG OUTPUT ------"
         tail -n 120 "$LOG_FILE"
         kill -TERM $COPPELIA_PID || true
         exit 1
     fi
 
     sleep 3
-    PORT_ELAPSED=$((PORT_ELAPSED + 3))
+    PORT_ELAPSED=$((PORT_ELAPSED+3))
 
-    echo "[WAIT] port check ${PORT_ELAPSED}s / ${PORT_TIMEOUT}s"
+    echo "[WAIT] ${PORT_ELAPSED}s / ${PORT_TIMEOUT}s"
     tail -n 6 "$LOG_FILE"
 
 done
 
 ########################################
-# Debug test discovery
+# Debug tests
 ########################################
 
-echo "[DEBUG] Test discovery"
+echo "[DEBUG] Checking tests"
 
 if [ -d /app/tests ]; then
     ls -la /app/tests
 else
-    echo "WARNING: /app/tests directory not found"
+    echo "WARNING: /app/tests not found"
 fi
 
-echo "[DEBUG] Python files found"
+echo "[DEBUG] Python files"
 
 find /app -name "*.py" || true
 
 ########################################
-# Run tests
+# Run pytest
 ########################################
 
 echo "[TEST] Running pytest"
@@ -176,7 +178,7 @@ pytest tests/ \
 TEST_EXIT_CODE=$?
 
 ########################################
-# Shutdown CoppeliaSim
+# Stop CoppeliaSim
 ########################################
 
 echo "[STOP] Stopping CoppeliaSim"
@@ -185,19 +187,19 @@ kill -TERM $COPPELIA_PID 2>/dev/null || true
 timeout 10s wait $COPPELIA_PID 2>/dev/null || true
 
 if kill -0 $COPPELIA_PID 2>/dev/null; then
-    echo "[WARN] Process still alive → forcing kill"
+    echo "[WARN] Force killing process"
     kill -KILL $COPPELIA_PID 2>/dev/null || true
 fi
 
 ########################################
-# Final logs
+# Logs
 ########################################
 
 echo "======================================="
-echo " Test finished with exit code $TEST_EXIT_CODE"
+echo " Test finished with code $TEST_EXIT_CODE"
 echo "======================================="
 
-echo "[LOG] Last 60 lines of CoppeliaSim log"
+echo "[LOG] Last lines of CoppeliaSim log"
 
 tail -n 60 "$LOG_FILE"
 
