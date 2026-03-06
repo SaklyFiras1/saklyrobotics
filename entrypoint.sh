@@ -6,10 +6,10 @@ echo " CoppeliaSim CI Runtime"
 echo "======================================="
 
 ########################################
-# Environment
+# Environment setup
 ########################################
 
-echo "[INIT] Initializing runtime"
+echo "[INIT] Initializing runtime environment"
 
 export XDG_RUNTIME_DIR=/tmp/runtime-root
 mkdir -p "$XDG_RUNTIME_DIR"
@@ -34,7 +34,7 @@ check_port() {
         lsof -i :"$PORT" >/dev/null 2>&1
 
     else
-        echo "WARNING: no port check tool available"
+        echo "[WARN] No port checking tool available"
         return 1
     fi
 }
@@ -47,8 +47,8 @@ echo "[START] Launching CoppeliaSim"
 
 xvfb-run --auto-servernum --server-args='-screen 0 1024x768x24' \
 /opt/coppelia/coppeliaSim \
--h \
--s \
+-H \
+-s600000 \
 -G ZmqRemoteApi.rpcPort=23000 \
 -G ZmqRemoteApi.cntPort=23001 \
 /app/pick_and_place.ttt > "$LOG_FILE" 2>&1 &
@@ -61,7 +61,7 @@ echo "[INFO] Log file: $LOG_FILE"
 sleep 5
 
 ########################################
-# Check if process crashed
+# Detect early crash
 ########################################
 
 if ! kill -0 $COPPELIA_PID 2>/dev/null; then
@@ -74,7 +74,7 @@ fi
 # Wait for ZMQ plugin
 ########################################
 
-echo "[WAIT] Waiting for ZMQ initialization"
+echo "[WAIT] Waiting for ZMQ Remote API"
 
 TIMEOUT=180
 ELAPSED=0
@@ -93,7 +93,7 @@ while true; do
     fi
 
     if [ $ELAPSED -ge $TIMEOUT ]; then
-        echo "ERROR: ZMQ not detected after $TIMEOUT seconds"
+        echo "ERROR: ZMQ plugin not detected after $TIMEOUT seconds"
         tail -n 80 "$LOG_FILE"
         kill -TERM $COPPELIA_PID || true
         exit 1
@@ -124,14 +124,14 @@ while true; do
     fi
 
     if ! kill -0 $COPPELIA_PID 2>/dev/null; then
-        echo "ERROR: CoppeliaSim crashed before port opened"
+        echo "ERROR: CoppeliaSim crashed before opening port"
         tail -n 80 "$LOG_FILE"
         exit 1
     fi
 
     if [ $PORT_ELAPSED -ge $PORT_TIMEOUT ]; then
         echo "ERROR: Port $PORT not opened after $PORT_TIMEOUT seconds"
-        tail -n 120 "$LOG_FILE"
+        tail -n 100 "$LOG_FILE"
         kill -TERM $COPPELIA_PID || true
         exit 1
     fi
@@ -148,20 +148,20 @@ done
 # Debug tests
 ########################################
 
-echo "[DEBUG] Checking tests"
+echo "[DEBUG] Checking test folder"
 
 if [ -d /app/tests ]; then
     ls -la /app/tests
 else
-    echo "WARNING: /app/tests not found"
+    echo "[WARN] /app/tests directory not found"
 fi
 
-echo "[DEBUG] Python files"
+echo "[DEBUG] Python files in project"
 
 find /app -name "*.py" || true
 
 ########################################
-# Run pytest
+# Run tests
 ########################################
 
 echo "[TEST] Running pytest"
@@ -192,11 +192,11 @@ if kill -0 $COPPELIA_PID 2>/dev/null; then
 fi
 
 ########################################
-# Logs
+# Final logs
 ########################################
 
 echo "======================================="
-echo " Test finished with code $TEST_EXIT_CODE"
+echo " Tests finished with code $TEST_EXIT_CODE"
 echo "======================================="
 
 echo "[LOG] Last lines of CoppeliaSim log"
