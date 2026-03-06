@@ -17,7 +17,7 @@ def init_simulation(host="localhost", port=23000, timeout=60):
     interval = 1
     while elapsed < timeout:
         try:
-            sim_obj = client..getObject('sim')
+            sim_obj = client.getObject('sim')
             print(f"→ Connected to sim object after {elapsed}s")
             break
         except Exception:
