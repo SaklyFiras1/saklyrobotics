@@ -8,7 +8,7 @@ from lib.ArmRobot import UniversalRobot
 @pytest.fixture(scope="module")
 def sim():
     client = RemoteAPIClient(host='localhost', port=23000)
-    sim = client.require('sim')
+    sim = client.getObject('sim')
     print("→ Démarrage de la simulation CoppeliaSim...")
     sim.startSimulation()
     time.sleep(2.0)
